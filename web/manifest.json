@@ -1,11 +1,11 @@
 {
-    "name": "photo_divider",
-    "short_name": "photo_divider",
+    "name": "Photo Divider",
+    "short_name": "Photo Divider",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Split a photo into horizontal, vertical or grid pieces right in your browser. Nothing is uploaded.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

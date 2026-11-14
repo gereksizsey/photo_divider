@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
 import 'download.dart';
+import 'drop.dart';
 import 'heic.dart';
 import 'split.dart';
 
@@ -99,41 +100,48 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  @override
+  void initState() {
+    super.initState();
+    onDropOrPaste(_load);
+  }
+
   Future<void> _pick() async {
     final f = await FilePicker.pickFile(
       type: FileType.custom,
       // Explicit list: some desktop file dialogs hide .heic under a plain image/* filter.
       allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif'],
     );
-    if (f == null) return;
-    await _run(() async {
-      var bytes = await f.readAsBytes();
-      if (looksLikeHeic(bytes)) {
-        final png = await heicToPng(bytes);
-        if (png == null) {
-          _snack('Could not convert this HEIC/HEIF file');
-          return;
-        }
-        bytes = png; // so "Same as input" gives PNG, as the spec says
-      }
-      final decoded = img.decodeImage(bytes);
-      if (decoded == null) {
-        _snack('Unsupported image format');
+    if (f != null) await _load(f.name, f.readAsBytes);
+  }
+
+  Future<void> _load(String name, Future<Uint8List> Function() read) => _run(() async {
+    var bytes = await read();
+    if (looksLikeHeic(bytes)) {
+      final png = await heicToPng(bytes);
+      if (png == null) {
+        _snack('Could not convert this HEIC/HEIF file');
         return;
       }
-      final src = img.bakeOrientation(decoded);
-      // View from the decoded image so it matches the pieces exactly (EXIF rotation, TIFF).
-      final view = await _toView(src);
-      final old = _view;
-      setState(() {
-        _name = f.name;
-        _src = src;
-        _format = img.findFormatForData(bytes);
-        _view = view;
-      });
-      old?.dispose();
+      bytes = png; // so "Same as input" gives PNG, as the spec says
+    }
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) {
+      _snack('Unsupported image format');
+      return;
+    }
+    final src = img.bakeOrientation(decoded);
+    // View from the decoded image so it matches the pieces exactly (EXIF rotation, TIFF).
+    final view = await _toView(src);
+    final old = _view;
+    setState(() {
+      _name = name;
+      _src = src;
+      _format = img.findFormatForData(bytes);
+      _view = view;
     });
-  }
+    old?.dispose();
+  });
 
   void _openViewer(List<Piece> pieces, int start) {
     final src = _src!, view = _view!;
@@ -190,12 +198,31 @@ class _HomePageState extends State<HomePage> {
   void _download(Piece p) => downloadBytes(encodePiece(_src!, p, _ext, _quality), _fileName(p));
 
   Future<void> _downloadAll(List<Piece> pieces) => _run(() async {
-    for (final p in pieces) {
-      _download(p);
+    final files = {for (final p in pieces) _fileName(p): encodePiece(_src!, p, _ext, _quality)};
+    if (!preferShare) return _downloadFiles(files);
+    if (tapStillActive) return _shareOrDownload(files);
+    // Encoding outlasted the tap and the share sheet needs a recent one: ask for another.
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${files.length} pieces ready'),
+        duration: const Duration(minutes: 1),
+        action: SnackBarAction(label: 'Save', onPressed: () => _run(() => _shareOrDownload(files))),
+      ),
+    );
+  });
+
+  Future<void> _shareOrDownload(Map<String, Uint8List> files) async {
+    if (!await shareFiles(files)) await _downloadFiles(files);
+  }
+
+  Future<void> _downloadFiles(Map<String, Uint8List> files) async {
+    for (final MapEntry(key: name, value: bytes) in files.entries) {
+      downloadBytes(bytes, name);
       // Browsers drop back-to-back downloads fired in the same tick.
       await Future.delayed(const Duration(milliseconds: 200));
     }
-  });
+  }
 
   Widget _intField(String label, int value, void Function(int) set) => SizedBox(
     width: 220,

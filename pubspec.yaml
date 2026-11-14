@@ -1,5 +1,5 @@
 name: photo_divider
-description: "A new Flutter project."
+description: "Split a photo into horizontal, vertical or grid pieces right in your browser. Nothing is uploaded."
 publish_to: 'none'
 version: 0.1.0+1
 
