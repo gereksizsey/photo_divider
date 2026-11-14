@@ -1,12 +1,57 @@
+import 'dart:async';
+import 'dart:ui' as ui;
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
 import 'download.dart';
+import 'heic.dart';
 import 'split.dart';
 
-void main() => runApp(const MaterialApp(title: 'Photo Divider', home: HomePage()));
+/// App-wide so the spinner also covers the viewer route.
+final _busy = ValueNotifier(false);
+
+void main() => runApp(
+  MaterialApp(
+    title: 'Photo Divider',
+    home: const HomePage(),
+    builder: (context, child) => ValueListenableBuilder(
+      valueListenable: _busy,
+      builder: (context, busy, _) => Stack(
+        children: [
+          child!,
+          if (busy)
+            const Positioned.fill(
+              child: ColoredBox(color: Colors.black26, child: Center(child: CircularProgressIndicator())),
+            ),
+        ],
+      ),
+    ),
+  ),
+);
+
+// shortcut: preview/thumbnails/viewer use a copy capped at this size, so the viewer is true full size
+// only up to ~16 MP photos; raise it if users need to inspect bigger ones (costs memory).
+const _viewMax = 4096;
+
+/// Downscaled copy for preview, thumbnails and viewer. Raw RGBA, so no slow PNG encode.
+Future<ui.Image> _toView(img.Image src) {
+  final wide = src.width >= src.height;
+  final small = src.width > _viewMax || src.height > _viewMax
+      ? img.copyResize(
+          src,
+          width: wide ? _viewMax : null,
+          height: wide ? null : _viewMax,
+          interpolation: img.Interpolation.linear,
+        )
+      : src;
+  final rgba = small.convert(format: img.Format.uint8, numChannels: 4, noAnimation: true);
+  final done = Completer<ui.Image>();
+  ui.decodeImageFromPixels(rgba.toUint8List(), rgba.width, rgba.height, ui.PixelFormat.rgba8888, done.complete);
+  return done.future;
+}
 
 enum Mode { horizontal, vertical, grid }
 
@@ -24,8 +69,7 @@ class _HomePageState extends State<HomePage> {
   String _name = '';
   img.Image? _src;
   img.ImageFormat? _format;
-  Uint8List? _preview;
-  bool _busy = false;
+  ui.Image? _view;
 
   Mode _mode = Mode.horizontal;
   int _n = 3, _rows = 2, _cols = 3, _gapX = 0, _gapY = 0;
@@ -43,7 +87,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _run(Future<void> Function() work) async {
-    setState(() => _busy = true);
+    _busy.value = true;
     // Let the spinner paint first: decode/encode is pure Dart and blocks the UI thread on web.
     await Future.delayed(const Duration(milliseconds: 50));
     try {
@@ -51,29 +95,96 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       _snack('Error: $e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      _busy.value = false;
     }
   }
 
   Future<void> _pick() async {
-    final f = await FilePicker.pickFile(type: FileType.image);
+    final f = await FilePicker.pickFile(
+      type: FileType.custom,
+      // Explicit list: some desktop file dialogs hide .heic under a plain image/* filter.
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif'],
+    );
     if (f == null) return;
     await _run(() async {
-      final bytes = await f.readAsBytes();
+      var bytes = await f.readAsBytes();
+      if (looksLikeHeic(bytes)) {
+        final png = await heicToPng(bytes);
+        if (png == null) {
+          _snack('Could not convert this HEIC/HEIF file');
+          return;
+        }
+        bytes = png; // so "Same as input" gives PNG, as the spec says
+      }
       final decoded = img.decodeImage(bytes);
       if (decoded == null) {
-        _snack('Unsupported image format (HEIC is not supported in this demo yet)');
+        _snack('Unsupported image format');
         return;
       }
       final src = img.bakeOrientation(decoded);
+      // View from the decoded image so it matches the pieces exactly (EXIF rotation, TIFF).
+      final view = await _toView(src);
+      final old = _view;
       setState(() {
         _name = f.name;
         _src = src;
         _format = img.findFormatForData(bytes);
-        // Preview from the decoded image so it matches the pieces exactly (EXIF rotation, TIFF).
-        _preview = img.encodePng(src.width > 1200 ? img.copyResize(src, width: 1200) : src, level: 1);
+        _view = view;
       });
+      old?.dispose();
     });
+  }
+
+  void _openViewer(List<Piece> pieces, int start) {
+    final src = _src!, view = _view!;
+    var i = start;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => StatefulBuilder(
+          builder: (context, setViewer) {
+            final p = pieces[i];
+            return Scaffold(
+              backgroundColor: Colors.black,
+              appBar: AppBar(
+                title: Text('${_fileName(p)}  (${i + 1}/${pieces.length})'),
+                actions: [
+                  IconButton(
+                    tooltip: 'Download',
+                    icon: const Icon(Icons.download),
+                    onPressed: () => _run(() async => _download(p)),
+                  ),
+                ],
+              ),
+              body: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Previous',
+                    color: Colors.white,
+                    icon: const Icon(Icons.chevron_left, size: 40),
+                    onPressed: i > 0 ? () => setViewer(() => i--) : null,
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: p.w / p.h,
+                        child: CustomPaint(painter: _CropPainter(view, p, src.width, src.height)),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Next',
+                    color: Colors.white,
+                    icon: const Icon(Icons.chevron_right, size: 40),
+                    onPressed: i < pieces.length - 1 ? () => setViewer(() => i++) : null,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   void _download(Piece p) => downloadBytes(encodePiece(_src!, p, _ext, _quality), _fileName(p));
@@ -100,7 +211,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final src = _src;
+    final src = _src, view = _view;
     var pieces = <Piece>[];
     String? error;
     if (src != null) {
@@ -117,129 +228,162 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Photo Divider')),
-      body: Stack(
+      body: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
-          ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 900),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    spacing: 16,
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 900),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                spacing: 16,
+                children: [
+                  Wrap(
+                    spacing: 12,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Wrap(
-                        spacing: 12,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          FilledButton.icon(onPressed: _pick, icon: const Icon(Icons.image), label: const Text('Pick image')),
-                          if (src != null) Text('$_name  ·  ${src.width}×${src.height}'),
-                        ],
-                      ),
-                      SegmentedButton<Mode>(
+                      FilledButton.icon(onPressed: _pick, icon: const Icon(Icons.image), label: const Text('Pick image')),
+                      if (src != null) Text('$_name  ·  ${src.width}×${src.height}'),
+                    ],
+                  ),
+                  SegmentedButton<Mode>(
+                    segments: const [
+                      ButtonSegment(value: Mode.horizontal, label: Text('Horizontal')),
+                      ButtonSegment(value: Mode.vertical, label: Text('Vertical')),
+                      ButtonSegment(value: Mode.grid, label: Text('Grid')),
+                    ],
+                    selected: {_mode},
+                    onSelectionChanged: (s) => setState(() => _mode = s.first),
+                  ),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      if (_mode == Mode.grid) ...[
+                        _intField('Rows', _rows, (v) => _rows = v),
+                        _intField('Columns', _cols, (v) => _cols = v),
+                      ] else
+                        _intField('Count', _n, (v) => _n = v),
+                      if (_mode != Mode.vertical) _intField('Gap between columns (px)', _gapX, (v) => _gapX = v),
+                      if (_mode != Mode.horizontal) _intField('Gap between rows (px)', _gapY, (v) => _gapY = v),
+                    ],
+                  ),
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      SegmentedButton<OutFormat>(
                         segments: const [
-                          ButtonSegment(value: Mode.horizontal, label: Text('Horizontal')),
-                          ButtonSegment(value: Mode.vertical, label: Text('Vertical')),
-                          ButtonSegment(value: Mode.grid, label: Text('Grid')),
+                          ButtonSegment(value: OutFormat.same, label: Text('Same as input')),
+                          ButtonSegment(value: OutFormat.jpg, label: Text('JPG')),
+                          ButtonSegment(value: OutFormat.png, label: Text('PNG')),
                         ],
-                        selected: {_mode},
-                        onSelectionChanged: (s) => setState(() => _mode = s.first),
+                        selected: {_out},
+                        onSelectionChanged: (s) => setState(() => _out = s.first),
                       ),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          if (_mode == Mode.grid) ...[
-                            _intField('Rows', _rows, (v) => _rows = v),
-                            _intField('Columns', _cols, (v) => _cols = v),
-                          ] else
-                            _intField('Count', _n, (v) => _n = v),
-                          if (_mode != Mode.vertical) _intField('Gap between columns (px)', _gapX, (v) => _gapX = v),
-                          if (_mode != Mode.horizontal) _intField('Gap between rows (px)', _gapY, (v) => _gapY = v),
-                        ],
-                      ),
-                      Wrap(
-                        spacing: 16,
-                        runSpacing: 8,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          SegmentedButton<OutFormat>(
-                            segments: const [
-                              ButtonSegment(value: OutFormat.same, label: Text('Same as input')),
-                              ButtonSegment(value: OutFormat.jpg, label: Text('JPG')),
-                              ButtonSegment(value: OutFormat.png, label: Text('PNG')),
+                      if (_ext == 'jpg')
+                        SizedBox(
+                          width: 300,
+                          child: Row(
+                            children: [
+                              Text('Quality $_quality'),
+                              Expanded(
+                                child: Slider(
+                                  min: 1,
+                                  max: 100,
+                                  divisions: 99,
+                                  value: _quality.toDouble(),
+                                  onChanged: (v) => setState(() => _quality = v.round()),
+                                ),
+                              ),
                             ],
-                            selected: {_out},
-                            onSelectionChanged: (s) => setState(() => _out = s.first),
                           ),
-                          if (_ext == 'jpg')
-                            SizedBox(
-                              width: 300,
-                              child: Row(
-                                children: [
-                                  Text('Quality $_quality'),
-                                  Expanded(
-                                    child: Slider(
-                                      min: 1,
-                                      max: 100,
-                                      divisions: 99,
-                                      value: _quality.toDouble(),
-                                      onChanged: (v) => setState(() => _quality = v.round()),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
+                        ),
+                    ],
+                  ),
+                  if (error != null) Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  if (src != null)
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 600),
+                        child: AspectRatio(
+                          aspectRatio: src.width / src.height,
+                          child: CustomPaint(
+                            foregroundPainter: _CutPainter(pieces, src.width, src.height),
+                            child: RawImage(image: view, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+                          ),
+                        ),
                       ),
-                      if (error != null) Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                      if (src != null)
-                        Center(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 600),
-                            child: AspectRatio(
-                              aspectRatio: src.width / src.height,
-                              child: CustomPaint(
-                                foregroundPainter: _CutPainter(pieces, src.width, src.height),
-                                child: Image.memory(_preview!, fit: BoxFit.fill, gaplessPlayback: true),
-                              ),
-                            ),
-                          ),
-                        ),
-                      if (pieces.isNotEmpty) ...[
-                        FilledButton.icon(
-                          onPressed: () => _downloadAll(pieces),
-                          icon: const Icon(Icons.download),
-                          label: Text('Download all (${pieces.length})'),
-                        ),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
+                    ),
+                  if (pieces.isNotEmpty) ...[
+                    FilledButton.icon(
+                      onPressed: () => _downloadAll(pieces),
+                      icon: const Icon(Icons.download),
+                      label: Text('Download all (${pieces.length})'),
+                    ),
+                    // Thumbnails laid out like the image, pulled apart; half the preview's height budget.
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: 300 * src!.width / src.height),
+                        child: Column(
+                          spacing: 6,
                           children: [
-                            for (final p in pieces)
-                              ActionChip(
-                                avatar: const Icon(Icons.download, size: 16),
-                                label: Text(_fileName(p)),
-                                onPressed: () => _run(() async => _download(p)),
+                            for (var r = 0; r < _r; r++)
+                              Row(
+                                spacing: 6,
+                                children: [
+                                  for (var i = r * _c; i < (r + 1) * _c; i++)
+                                    Expanded(
+                                      flex: pieces[i].w, // same row height for every piece
+                                      child: Tooltip(
+                                        message: _fileName(pieces[i]),
+                                        child: InkWell(
+                                          onTap: () => _openViewer(pieces, i),
+                                          child: AspectRatio(
+                                            aspectRatio: pieces[i].w / pieces[i].h,
+                                            child: CustomPaint(painter: _CropPainter(view!, pieces[i], src.width, src.height)),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
                           ],
                         ),
-                      ],
-                    ],
-                  ),
-                ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
-            ],
-          ),
-          if (_busy)
-            const Positioned.fill(
-              child: ColoredBox(color: Colors.black26, child: Center(child: CircularProgressIndicator())),
             ),
+          ),
         ],
       ),
     );
   }
+}
+
+/// One piece, cropped out of the downscaled view image ([w]x[h] is the full source size).
+class _CropPainter extends CustomPainter {
+  _CropPainter(this.view, this.p, this.w, this.h);
+  final ui.Image view;
+  final Piece p;
+  final int w, h;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final kx = view.width / w, ky = view.height / h;
+    canvas.drawImageRect(
+      view,
+      Rect.fromLTWH(p.x * kx, p.y * ky, p.w * kx, p.h * ky),
+      Offset.zero & size,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_CropPainter old) => true;
 }
 
 /// Cut lines on the preview, gap areas shaded. Works in image pixel coordinates.
