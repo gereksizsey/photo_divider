@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
@@ -10,6 +11,8 @@ import 'download.dart';
 import 'drop.dart';
 import 'heic.dart';
 import 'split.dart';
+
+part 'x_mode.dart';
 
 /// App-wide so the spinner also covers the viewer route.
 final _busy = ValueNotifier(false);
@@ -59,6 +62,40 @@ enum Mode { horizontal, vertical, grid }
 // shortcut: hard cap so a typo like 1000x1000 can't hang the tab; raise if real users need more.
 const _maxPieces = 400;
 
+/// Scrollable page, content centred and at most 900 px wide.
+Widget _page(List<Widget> children) => ListView(
+  padding: const EdgeInsets.all(16),
+  children: [
+    Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 900),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 16, children: children),
+      ),
+    ),
+  ],
+);
+
+Widget _numField(
+  String label,
+  String value,
+  void Function(String) onChanged, {
+  bool decimal = false,
+  bool enabled = true,
+  String? hint,
+  Key? key,
+}) => SizedBox(
+  width: 220,
+  child: TextFormField(
+    key: key ?? ValueKey(label), // fields swap when the mode changes; keep each one's own text
+    initialValue: value,
+    enabled: enabled,
+    decoration: InputDecoration(labelText: label, hintText: hint, border: const OutlineInputBorder()),
+    keyboardType: TextInputType.numberWithOptions(decimal: decimal),
+    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(decimal ? r'[0-9.]' : r'[0-9]'))],
+    onChanged: onChanged,
+  ),
+);
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -76,6 +113,7 @@ class _HomePageState extends State<HomePage> {
   int _n = 3, _rows = 2, _cols = 3, _gapX = 0, _gapY = 0;
   OutFormat _out = OutFormat.same;
   int _quality = 100;
+  int _tab = 0; // 0: Normal, 1: For X.com
 
   int get _r => switch (_mode) { Mode.horizontal => 1, Mode.vertical => _n, Mode.grid => _rows };
   int get _c => switch (_mode) { Mode.horizontal => _n, Mode.vertical => 1, Mode.grid => _cols };
@@ -197,8 +235,9 @@ class _HomePageState extends State<HomePage> {
 
   void _download(Piece p) => downloadBytes(encodePiece(_src!, p, _ext, _quality), _fileName(p));
 
-  Future<void> _downloadAll(List<Piece> pieces) => _run(() async {
-    final files = {for (final p in pieces) _fileName(p): encodePiece(_src!, p, _ext, _quality)};
+  /// [encode] runs once the spinner shows and returns name -> bytes in download order.
+  Future<void> _downloadAll(Map<String, Uint8List> Function() encode) => _run(() async {
+    final files = encode();
     if (!preferShare) return _downloadFiles(files);
     if (tapStillActive) return _shareOrDownload(files);
     // Encoding outlasted the tap and the share sheet needs a recent one: ask for another.
@@ -224,17 +263,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Widget _intField(String label, int value, void Function(int) set) => SizedBox(
-    width: 220,
-    child: TextFormField(
-      key: ValueKey(label), // fields swap when the mode changes; keep each one's own text
-      initialValue: '$value',
-      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
-      keyboardType: TextInputType.number,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-      onChanged: (s) => setState(() => set(int.tryParse(s) ?? 0)),
-    ),
-  );
+  Widget _intField(String label, int value, void Function(int) set) =>
+      _numField(label, '$value', (s) => setState(() => set(int.tryParse(s) ?? 0)));
 
   @override
   Widget build(BuildContext context) {
@@ -253,26 +283,66 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Photo Divider')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 900),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 16,
-                children: [
-                  Wrap(
-                    spacing: 12,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      FilledButton.icon(onPressed: _pick, icon: const Icon(Icons.image), label: const Text('Pick image')),
-                      if (src != null) Text('$_name  ·  ${src.width}×${src.height}'),
-                    ],
+    // Shared by both tabs: same picked image, same output format.
+    final header = Wrap(
+      spacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        FilledButton.icon(onPressed: _pick, icon: const Icon(Icons.image), label: const Text('Pick image')),
+        if (src != null) Text('$_name  ·  ${src.width}×${src.height}'),
+      ],
+    );
+    final formatControls = Wrap(
+      spacing: 16,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        SegmentedButton<OutFormat>(
+          segments: const [
+            ButtonSegment(value: OutFormat.same, label: Text('Same as input')),
+            ButtonSegment(value: OutFormat.jpg, label: Text('JPG')),
+            ButtonSegment(value: OutFormat.png, label: Text('PNG')),
+          ],
+          selected: {_out},
+          onSelectionChanged: (s) => setState(() => _out = s.first),
+        ),
+        if (_ext == 'jpg')
+          SizedBox(
+            width: 300,
+            child: Row(
+              children: [
+                Text('Quality $_quality'),
+                Expanded(
+                  child: Slider(
+                    min: 1,
+                    max: 100,
+                    divisions: 99,
+                    value: _quality.toDouble(),
+                    onChanged: (v) => setState(() => _quality = v.round()),
                   ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Photo Divider'),
+          bottom: TabBar(
+            onTap: (i) => setState(() => _tab = i),
+            tabs: const [Tab(text: 'Normal'), Tab(text: 'For X.com')],
+          ),
+        ),
+        // IndexedStack keeps each tab's settings and scroll position while the other is shown.
+        body: IndexedStack(
+          index: _tab,
+          children: [
+            _page([
+                  header,
                   SegmentedButton<Mode>(
                     segments: const [
                       ButtonSegment(value: Mode.horizontal, label: Text('Horizontal')),
@@ -295,40 +365,7 @@ class _HomePageState extends State<HomePage> {
                       if (_mode != Mode.horizontal) _intField('Gap between rows (px)', _gapY, (v) => _gapY = v),
                     ],
                   ),
-                  Wrap(
-                    spacing: 16,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      SegmentedButton<OutFormat>(
-                        segments: const [
-                          ButtonSegment(value: OutFormat.same, label: Text('Same as input')),
-                          ButtonSegment(value: OutFormat.jpg, label: Text('JPG')),
-                          ButtonSegment(value: OutFormat.png, label: Text('PNG')),
-                        ],
-                        selected: {_out},
-                        onSelectionChanged: (s) => setState(() => _out = s.first),
-                      ),
-                      if (_ext == 'jpg')
-                        SizedBox(
-                          width: 300,
-                          child: Row(
-                            children: [
-                              Text('Quality $_quality'),
-                              Expanded(
-                                child: Slider(
-                                  min: 1,
-                                  max: 100,
-                                  divisions: 99,
-                                  value: _quality.toDouble(),
-                                  onChanged: (v) => setState(() => _quality = v.round()),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
+                  formatControls,
                   if (error != null) Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                   if (src != null)
                     Center(
@@ -345,7 +382,9 @@ class _HomePageState extends State<HomePage> {
                     ),
                   if (pieces.isNotEmpty) ...[
                     FilledButton.icon(
-                      onPressed: () => _downloadAll(pieces),
+                      onPressed: () => _downloadAll(
+                        () => {for (final p in pieces) _fileName(p): encodePiece(src!, p, _ext, _quality)},
+                      ),
                       icon: const Icon(Icons.download),
                       label: Text('Download all (${pieces.length})'),
                     ),
@@ -381,11 +420,19 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ],
-                ],
-              ),
+            ]),
+            _XTab(
+              header: header,
+              formatControls: formatControls,
+              src: src,
+              view: view,
+              base: _base,
+              ext: _ext,
+              quality: _quality,
+              saveAll: _downloadAll,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
