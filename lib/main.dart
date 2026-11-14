@@ -239,20 +239,22 @@ class _HomePageState extends State<HomePage> {
   Future<void> _downloadAll(Map<String, Uint8List> Function() encode) => _run(() async {
     final files = encode();
     if (!preferShare) return _downloadFiles(files);
-    if (tapStillActive) return _shareOrDownload(files);
-    // Encoding outlasted the tap and the share sheet needs a recent one: ask for another.
+    if (!isIOS) await _downloadFiles(files); // Android downloads fine; the share sheet comes on top
+    if (tapStillActive) return _share(files);
+    // Encoding/downloading outlasted the tap and the share sheet needs a recent one: ask for another.
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('${files.length} pieces ready'),
         duration: const Duration(minutes: 1),
-        action: SnackBarAction(label: 'Save', onPressed: () => _run(() => _shareOrDownload(files))),
+        action: SnackBarAction(label: isIOS ? 'Save' : 'Share', onPressed: () => _run(() => _share(files))),
       ),
     );
   });
 
-  Future<void> _shareOrDownload(Map<String, Uint8List> files) async {
-    if (!await shareFiles(files)) await _downloadFiles(files);
+  /// On iOS the share sheet is the only way to save, so fall back to downloads if it refuses.
+  Future<void> _share(Map<String, Uint8List> files) async {
+    if (!await shareFiles(files) && isIOS) await _downloadFiles(files);
   }
 
   Future<void> _downloadFiles(Map<String, Uint8List> files) async {

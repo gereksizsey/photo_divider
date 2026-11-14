@@ -16,9 +16,12 @@ void downloadBytes(Uint8List bytes, String name) {
 
 final _nav = web.window.navigator;
 
-/// Touch device with file sharing. iOS Safari blocks back-to-back downloads, but its share sheet
-/// can "Save N Images" to Photos in one go.
+/// Touch device with file sharing: offer the share sheet (WhatsApp, X, Photos...).
 bool get preferShare => web.window.matchMedia('(pointer: coarse)').matches && _nav.has('canShare');
+
+/// iOS browsers (all WebKit) block back-to-back downloads, so there the share sheet replaces them
+/// ("Save N Images" to Photos). A touch "Macintosh" is an iPad in desktop mode.
+bool get isIOS => preferShare && RegExp('iPhone|iPad|iPod|Macintosh').hasMatch(_nav.userAgent);
 
 /// navigator.share only works shortly after a tap; false once that has expired (e.g. after a slow encode).
 bool get tapStillActive => !_nav.has('userActivation') || _nav.userActivation.isActive;
