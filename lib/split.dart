@@ -82,6 +82,9 @@ String outExt(OutFormat out, img.ImageFormat? input) => switch (out) {
 
 Uint8List encodePiece(img.Image src, Piece p, String ext, int quality) {
   final c = img.copyCrop(src, x: p.x, y: p.y, width: p.w, height: p.h);
+  // copyCrop keeps the source EXIF: its capture date files pieces under the original in galleries,
+  // and it also carries the original's thumbnail and GPS.
+  c.exif.clear();
   return switch (ext) {
     'jpg' => img.encodeJpg(c, quality: quality),
     'gif' => img.encodeGif(c),

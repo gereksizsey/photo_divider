@@ -240,21 +240,32 @@ class _HomePageState extends State<HomePage> {
   Future<void> _downloadAll(Map<String, Uint8List> Function() encode, {bool share = false}) => _run(() async {
     final files = encode();
     if (!share && !isIOS) return _downloadFiles(files);
-    if (tapStillActive) return _share(files);
-    // Encoding/downloading outlasted the tap and the share sheet needs a recent one: ask for another.
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${files.length} pieces ready'),
-        duration: const Duration(minutes: 1),
-        action: SnackBarAction(label: isIOS ? 'Save' : 'Share', onPressed: () => _run(() => _share(files))),
-      ),
-    );
+    await _shareFrom(shareBatches(files), 0);
   });
 
-  /// Falls back to downloads if the browser refuses the files (e.g. Chrome's count/size limit).
-  Future<void> _share(Map<String, Uint8List> files) async {
-    if (!await shareFiles(files)) await _downloadFiles(files);
+  /// Shares batch [i] if the tap is still fresh, then asks for a tap for the next one: the share sheet
+  /// needs a recent tap each time, and encoding or the previous share can outlast it.
+  Future<void> _shareFrom(List<Map<String, Uint8List>> batches, int i) async {
+    if (tapStillActive) {
+      if (!await shareFiles(batches[i])) {
+        // iOS gets here from "Download all", so downloading beats nothing; Android's Share must not download.
+        if (isIOS) return _downloadFiles(batches[i]);
+        return _snack("The browser refused to share these files. Use Download all instead.");
+      }
+      i++;
+    }
+    if (i == batches.length || !mounted) return;
+    final done = batches.take(i).fold(0, (n, b) => n + b.length);
+    final total = batches.fold(0, (n, b) => n + b.length);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          batches.length == 1 ? '$total pieces ready' : 'Pieces ${done + 1}–${done + batches[i].length} of $total ready',
+        ),
+        duration: const Duration(minutes: 1),
+        action: SnackBarAction(label: isIOS ? 'Save' : 'Share', onPressed: () => _run(() => _shareFrom(batches, i))),
+      ),
+    );
   }
 
   Future<void> _downloadFiles(Map<String, Uint8List> files) async {

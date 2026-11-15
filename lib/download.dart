@@ -46,6 +46,23 @@ Future<bool> shareFiles(Map<String, Uint8List> files) async {
   return true;
 }
 
+/// Splits [files] into shares Chrome accepts: at most 10 files and 50 MB each (navigator_share.cc),
+/// else it refuses the whole share. WebKit (iOS) has no such limit: one batch there.
+List<Map<String, Uint8List>> shareBatches(Map<String, Uint8List> files) {
+  if (isIOS) return [files];
+  final batches = <Map<String, Uint8List>>[];
+  var bytes = 0;
+  for (final MapEntry(key: name, value: data) in files.entries) {
+    if (batches.isEmpty || batches.last.length == 10 || bytes + data.length > 50 << 20) {
+      batches.add({});
+      bytes = 0;
+    }
+    batches.last[name] = data;
+    bytes += data.length;
+  }
+  return batches;
+}
+
 String _mime(String name) => switch (name.split('.').last) {
   'jpg' => 'image/jpeg',
   'tif' => 'image/tiff',
