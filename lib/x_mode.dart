@@ -29,7 +29,7 @@ class _XTab extends StatefulWidget {
   final ui.Image? view;
   final String base, ext;
   final int quality;
-  final Future<void> Function(Map<String, Uint8List> Function() encode) saveAll;
+  final Future<void> Function(Map<String, Uint8List> Function() encode, {bool share}) saveAll;
 
   @override
   State<_XTab> createState() => _XTabState();
@@ -89,7 +89,7 @@ class _XTabState extends State<_XTab> {
 
   String _fileName(int i) => '${widget.base}_${'${i + 1}'.padLeft('$_n'.length, '0')}.${widget.ext}';
 
-  void _saveAll(img.Image src, List<Piece> pieces, int w, int h) => widget.saveAll(() {
+  void _saveAll(img.Image src, List<Piece> pieces, int w, int h, {bool share = false}) => widget.saveAll(share: share, () {
     // Resample once, only when another output height was asked for; otherwise crop the original pixels.
     final s = h == src.height
         ? src
@@ -202,10 +202,22 @@ class _XTabState extends State<_XTab> {
       widget.formatControls,
       for (final e in errors) Text(e, style: TextStyle(color: theme.colorScheme.error)),
       if (comp.isNotEmpty)
-        FilledButton.icon(
-          onPressed: () => _saveAll(src!, comp, w, h),
-          icon: const Icon(Icons.download),
-          label: Text('Download all (${comp.length})'),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            FilledButton.icon(
+              onPressed: () => _saveAll(src!, comp, w, h),
+              icon: const Icon(Icons.download),
+              label: Text('Download all (${comp.length})'),
+            ),
+            if (preferShare && !isIOS)
+              OutlinedButton.icon(
+                onPressed: () => _saveAll(src!, comp, w, h, share: true),
+                icon: const Icon(Icons.share),
+                label: const Text('Share'),
+              ),
+          ],
         ),
       if (ready) ...[
         Text('Twitter Visualizer', style: theme.textTheme.titleLarge),

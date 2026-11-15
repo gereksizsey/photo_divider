@@ -236,10 +236,10 @@ class _HomePageState extends State<HomePage> {
   void _download(Piece p) => downloadBytes(encodePiece(_src!, p, _ext, _quality), _fileName(p));
 
   /// [encode] runs once the spinner shows and returns name -> bytes in download order.
-  Future<void> _downloadAll(Map<String, Uint8List> Function() encode) => _run(() async {
+  /// [share]: the Share button (Android); iOS always shares since that's its only way to save.
+  Future<void> _downloadAll(Map<String, Uint8List> Function() encode, {bool share = false}) => _run(() async {
     final files = encode();
-    if (!preferShare) return _downloadFiles(files);
-    if (!isIOS) await _downloadFiles(files); // Android downloads fine; the share sheet comes on top
+    if (!share && !isIOS) return _downloadFiles(files);
     if (tapStillActive) return _share(files);
     // Encoding/downloading outlasted the tap and the share sheet needs a recent one: ask for another.
     if (!mounted) return;
@@ -252,9 +252,9 @@ class _HomePageState extends State<HomePage> {
     );
   });
 
-  /// On iOS the share sheet is the only way to save, so fall back to downloads if it refuses.
+  /// Falls back to downloads if the browser refuses the files (e.g. Chrome's count/size limit).
   Future<void> _share(Map<String, Uint8List> files) async {
-    if (!await shareFiles(files) && isIOS) await _downloadFiles(files);
+    if (!await shareFiles(files)) await _downloadFiles(files);
   }
 
   Future<void> _downloadFiles(Map<String, Uint8List> files) async {
@@ -383,12 +383,27 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   if (pieces.isNotEmpty) ...[
-                    FilledButton.icon(
-                      onPressed: () => _downloadAll(
-                        () => {for (final p in pieces) _fileName(p): encodePiece(src!, p, _ext, _quality)},
-                      ),
-                      icon: const Icon(Icons.download),
-                      label: Text('Download all (${pieces.length})'),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () => _downloadAll(
+                            () => {for (final p in pieces) _fileName(p): encodePiece(src!, p, _ext, _quality)},
+                          ),
+                          icon: const Icon(Icons.download),
+                          label: Text('Download all (${pieces.length})'),
+                        ),
+                        if (preferShare && !isIOS)
+                          OutlinedButton.icon(
+                            onPressed: () => _downloadAll(
+                              () => {for (final p in pieces) _fileName(p): encodePiece(src!, p, _ext, _quality)},
+                              share: true,
+                            ),
+                            icon: const Icon(Icons.share),
+                            label: const Text('Share'),
+                          ),
+                      ],
                     ),
                     // Thumbnails laid out like the image, pulled apart; half the preview's height budget.
                     Center(
