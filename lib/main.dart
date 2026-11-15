@@ -3,13 +3,12 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
-import 'download.dart';
-import 'drop.dart';
-import 'heic.dart';
+import 'native.dart' if (dart.library.js_interop) 'web.dart';
 import 'split.dart';
 
 part 'x_mode.dart';
@@ -233,7 +232,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _download(Piece p) => downloadBytes(encodePiece(_src!, p, _ext, _quality), _fileName(p));
+  Future<void> _download(Piece p) => _downloadFiles({_fileName(p): encodePiece(_src!, p, _ext, _quality)});
 
   /// [encode] runs once the spinner shows and returns name -> bytes in download order.
   /// [share]: the Share button (Android); iOS always shares since that's its only way to save.
@@ -270,10 +269,11 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _downloadFiles(Map<String, Uint8List> files) async {
     for (final MapEntry(key: name, value: bytes) in files.entries) {
-      downloadBytes(bytes, name);
+      await downloadBytes(bytes, name);
       // Browsers drop back-to-back downloads fired in the same tick.
-      await Future.delayed(const Duration(milliseconds: 200));
+      if (kIsWeb) await Future.delayed(const Duration(milliseconds: 200));
     }
+    if (!kIsWeb) _snack('Saved ${files.length} to the gallery'); // the browser shows its own download notice
   }
 
   Widget _intField(String label, int value, void Function(int) set) =>

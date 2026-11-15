@@ -10,9 +10,6 @@ extension type _Options._(JSObject _) implements JSObject {
 @JS('heic2any')
 external JSPromise<web.Blob> _heic2any(_Options options);
 
-/// HEIC/HEIF box header: 'ftyp' at byte 4 (also matches AVIF/MP4; heic2any rejects those).
-bool looksLikeHeic(Uint8List b) => b.length > 12 && String.fromCharCodes(b, 4, 8) == 'ftyp';
-
 /// HEIC -> PNG bytes via heic2any (web/index.html). Null if it can't be converted or the script didn't load.
 Future<Uint8List?> heicToPng(Uint8List bytes) async {
   try {

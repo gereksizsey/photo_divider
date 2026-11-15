@@ -80,6 +80,9 @@ String outExt(OutFormat out, img.ImageFormat? input) => switch (out) {
   },
 };
 
+/// HEIC/HEIF box header: 'ftyp' at byte 4 (also matches AVIF/MP4; the HEIC converters reject those).
+bool looksLikeHeic(Uint8List b) => b.length > 12 && String.fromCharCodes(b, 4, 8) == 'ftyp';
+
 Uint8List encodePiece(img.Image src, Piece p, String ext, int quality) {
   final c = img.copyCrop(src, x: p.x, y: p.y, width: p.w, height: p.h);
   // copyCrop keeps the source EXIF: its capture date files pieces under the original in galleries,

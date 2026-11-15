@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
-void downloadBytes(Uint8List bytes, String name) {
+Future<void> downloadBytes(Uint8List bytes, String name) async {
   final url = web.URL.createObjectURL(web.Blob([bytes.toJS].toJS));
   web.HTMLAnchorElement()
     ..href = url
